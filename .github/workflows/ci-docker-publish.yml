@@ -1,0 +1,61 @@
+name: Publish Docker Image to GHCR
+
+on:
+  push:
+    branches: [deploy]
+    paths:
+      [
+        '.github/ci-docker-publish.yml',
+        'programs/**',
+        'lib/client/**',
+        'bin/keeper/**',
+        'bin/liquidator/**',
+        'bin/settler/**',
+        'bin/service-mango-crank/**',
+        'bin/service-mango-fills/**',
+        'bin/service-mango-orderbook/**',
+        'bin/service-mango-pnl/**',
+        'bin/service-mango-health/**',
+      ]
+  workflow_dispatch:
+
+env:
+  IMAGE: mango-v4
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      # Use docker buildx
+      - name: Use docker buildx
+        uses: docker/setup-buildx-action@v2
+        id: buildx
+        with:
+          install: true
+          buildkitd-flags: --debug
+
+      # Login to Registry
+      - name: Login to Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build and push the base image, leveraging layer caching
+      - name: Build and Push Base Image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/blockworks-foundation/${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/blockworks-foundation/${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

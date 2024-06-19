@@ -1,0 +1,18 @@
+program:
+  - 'programs/**'
+client:
+  - 'ts/client/**'
+liquidator:
+  - 'liquidator/**'
+keeper:
+  - 'keeper/**'
+devops:
+  - '*.yml'
+  - '*.yaml'
+  - '*Dockerfile*'
+  - 'fly.toml'
+dependency:
+  - '*.lock'
+documentation:
+  - '*.md'
+  - '**/LICENCE'

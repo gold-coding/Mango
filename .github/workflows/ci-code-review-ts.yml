@@ -1,0 +1,147 @@
+name: Code Review - TypeScript
+
+on:
+  pull_request:
+    branches: ['main', 'dev']
+    paths: ['ts/**', 'yarn.lock']
+  push:
+    paths: ['ts/**', 'yarn.lock']
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Format
+        run: yarn format
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Lint
+        run: yarn lint
+
+  depcheck:
+    name: Dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'yarn'
+
+      - name: Duplicates check
+        run: npx yarn-deduplicate --list --fail
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Run Test
+        run: yarn test
+
+  sast:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Run CodeQL
+        uses: github/codeql-action/analyze@v2
+
+  sca:
+    name: Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Fail the job on critical vulnerabiliies with fix available
+      - name: Fail on critical vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'yarn.lock'
+          ignore-unfixed: true
+          hide-progress: true
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+  ts-pass:
+    name: TS tests pass
+    needs: ['format', 'lint', 'test', 'depcheck']
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+
+  security-pass:
+    name: Security tests pass
+    needs: ['sca', 'sast']
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+
+  all-pass:
+    name: All tests pass 🚀
+    needs: ['ts-pass', 'security-pass']
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

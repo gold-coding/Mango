@@ -1,0 +1,198 @@
+name: Code Review - Rust
+on:
+  push:
+    paths:
+      [
+        'bin/cli/**',
+        'client/**',
+        'programs/**',
+        'bin/keeper/**',
+        'lib/**',
+        'bin/liquidator/**',
+        'bin/settle-bot/**',
+        'anchor/cli/**',
+        'Cargo.lock',
+      ]
+  pull_request:
+    branches: ['main', 'dev']
+    paths:
+      [
+        'bin/cli/**',
+        'client/**',
+        'programs/**',
+        'bin/keeper/**',
+        'lib/**',
+        'bin/liquidator/**',
+        'bin/settle-bot/**',
+        'anchor/cli/**',
+        'Cargo.lock',
+      ]
+  workflow_dispatch: # Pick branch manually
+
+env:
+  CARGO_TERM_COLOR: always
+  SOLANA_VERSION: '1.16.14'
+  RUST_TOOLCHAIN: '1.70.0'
+  LOG_PROGRAM: '4MangoMjqJ2firMokCjjGgoK8d4MXcrgL7XJaL3w6fVg'
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Checkout submodules
+        run: git submodule update --init
+
+      - name: Set Rust version
+        run: rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --component rustfmt
+
+      - name: Run fmt
+        run: cargo fmt -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Checkout submodules
+        run: git submodule update --init
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set Rust version
+        run: rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --component clippy
+
+      - name: Run clippy
+        # The --allow args are due to clippy scanning anchor
+        run: cargo clippy --workspace --exclude anchor-\* --exclude fixed --exclude checked_math --features enable-gpl -- --no-deps --deny=warnings --allow=clippy::style --allow=clippy::complexity --allow=clippy::manual-retain --allow=clippy::crate-in-macro-def --allow=clippy::result-large-err --allow=clippy::derive_partial_eq_without_eq
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Checkout submodules
+        run: git submodule update --init
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set Rust version
+        run: rustup toolchain install ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install Solana
+        run: |
+          sh -c "$(curl -sSfL https://release.solana.com/v${{ env.SOLANA_VERSION }}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          export PATH="/home/runner/.local/share/solana/install/active_release/bin:$PATH"
+          solana --version
+          echo "Generating keypair..."
+          solana-keygen new -o "$HOME/.config/solana/id.json" --no-passphrase --silent
+
+      - name: Build all deps
+        run: |
+          cargo build-sbf --features enable-gpl || true
+          cargo +solana build-sbf --features enable-gpl
+
+        # Run sbf tests and output to runner and log
+      - name: Run sbf tests
+        run: cargo +solana test-sbf --features enable-gpl 2> >(tee raw-test-sbf.log >&2)
+
+      - name: Save raw log
+        uses: actions/upload-artifact@v3
+        with:
+          name: raw-test-sbf
+          path: raw-test-sbf.log
+
+  idl:
+    name: IDL Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          path: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Check
+        run: yarn ts-node ts/client/scripts/idl-compare.ts main/mango_v4.json mango_v4.json
+
+  sca:
+    name: Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Fail the job on critical vulnerabiliies with fix available
+      - name: Fail on critical vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'Cargo.lock'
+          ignore-unfixed: true
+          hide-progress: true
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+  # Download logs and process them
+  process-logs:
+    name: Process logs
+    runs-on: ubuntu-latest
+    needs: ['test']
+    steps:
+      - name: Download raw log
+        uses: actions/download-artifact@v3
+        with:
+          name: raw-test-sbf
+
+      - name: Install deps
+        run: |
+          sudo apt-get install ripgrep
+          curl -Lo xsv.tar.gz "https://github.com/BurntSushi/xsv/releases/latest/download/xsv-0.13.0-x86_64-unknown-linux-musl.tar.gz"
+          sudo tar xf xsv.tar.gz -C /usr/local/bin
+
+      - name: Setup date input
+        id: date
+        run: echo "::set-output name=today::$(date +'%Y-%m-%d')"
+
+      - name: Process raw log
+        run: |
+          rg -oNI "(Instruction: |Program ${{ env.LOG_PROGRAM }} consumed).*$" raw-test-sbf.log \
+            | rg -U 'Instruction:.*\nProgram ${{ env.LOG_PROGRAM }}.*' \
+            | awk 'NR % 2 == 1 { o=$0 ; next } { print o " " $0 }' \
+            | sort | uniq -u | sort > cu-per-ix.log
+
+      - name: Clean up log
+        run: |
+          rg -N 'Instruction: (\w+) .* consumed (\d+) .*' cu-per-ix.log -r '${{ steps.date.outputs.today }},$1,$2' \
+            | uniq | xsv sort -s 2 -N -R \
+            | sort -t ',' -k 2,3 -u \
+            | sort > cu-per-ix-clean.log
+
+      - name: Save clean log
+        uses: actions/upload-artifact@v3
+        with:
+          name: cu-per-ix-clean
+          path: cu-per-ix-clean.log
